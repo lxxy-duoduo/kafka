@@ -43,6 +43,10 @@ import scala.math._
  *
  * A segment with a base offset of [base_offset] would be stored in two files, a [base_offset].index and a [base_offset].log file.
  *
+ * 一段日志。每个段有两个组件：日志和索引。日志是包含实际消息的 FileRecords。索引是从逻辑偏移映射到物理文件位置的 OffsetIndex。
+ * 每个段都有一个基本偏移量，它是一个偏移量 = 此段中任何消息的最小偏移量并且 > 任何先前段中的任何偏移量。基本偏移量为 [base_offset] 的段将存储在两个文件中，
+ * 一个 [base_offset].index 和一个 [base_offset].log 文件。
+ *
  * @param log The file records containing log entries
  * @param lazyOffsetIndex The offset index
  * @param lazyTimeIndex The timestamp index
