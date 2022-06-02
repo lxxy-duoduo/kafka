@@ -283,6 +283,10 @@ class Log(@volatile var dir: File,
   @volatile private var highWatermarkMetadata: LogOffsetMetadata = LogOffsetMetadata(logStartOffset)
 
   /* the actual segments of the log */
+  /**
+   * 用于保存当前日志下所有的日志段，底层是Java中的类ConcurrentSkipListMap
+   * 有两个好处。1：线程安全的；2：key是一个可排序的Map，能快速定位到相邻的日志段
+   */
   private val segments: ConcurrentNavigableMap[java.lang.Long, LogSegment] = new ConcurrentSkipListMap[java.lang.Long, LogSegment]
 
   // Visible for testing
@@ -1750,10 +1754,10 @@ class Log(@volatile var dir: File,
    */
   private def deleteOldSegments(predicate: (LogSegment, Option[LogSegment]) => Boolean, reason: String): Int = {
     lock synchronized {
-      val deletable = deletableSegments(predicate)
+      val deletable = deletableSegments(predicate)//根据传入的函数判断哪些日志段可以删除
       if (deletable.nonEmpty)
         info(s"Found deletable segments with base offsets [${deletable.map(_.baseOffset).mkString(",")}] due to $reason")
-      deleteSegments(deletable)
+      deleteSegments(deletable)//调用删除函数删除日志段
     }
   }
 
@@ -1762,13 +1766,13 @@ class Log(@volatile var dir: File,
       val numToDelete = deletable.size
       if (numToDelete > 0) {
         // we must always have at least one segment, so if we are going to delete all the segments, create a new one first
-        if (segments.size == numToDelete)
+        if (segments.size == numToDelete)//不允许删除所有的日志段，如果需要删除，那么先创建一个新的出来然后再删除
           roll()
         lock synchronized {
           checkIfMemoryMappedBufferClosed()
-          // remove the segments for lookups
+          // remove the segments for lookups  删除给定的日志段的底层物理文件和LogSegment对象
           removeAndDeleteSegments(deletable, asyncDelete = true)
-          maybeIncrementLogStartOffset(segments.firstEntry.getValue.baseOffset)
+          maybeIncrementLogStartOffset(segments.firstEntry.getValue.baseOffset) // 删除之后推进startOffset
         }
       }
       numToDelete
@@ -1788,11 +1792,17 @@ class Log(@volatile var dir: File,
    * @return the segments ready to be deleted
    */
   private def deletableSegments(predicate: (LogSegment, Option[LogSegment]) => Boolean): Iterable[LogSegment] = {
-    if (segments.isEmpty) {
+    if (segments.isEmpty) {//如果当前没有日志对象，直接返回
       Seq.empty
     } else {
       val deletable = ArrayBuffer.empty[LogSegment]
       var segmentEntry = segments.firstEntry
+      //从最小位移值的日志段向前遍历，直到满足以下条件之一则停止
+      //1. 测定函数的predicate=false
+      //2. 扫描到包含Log对象高水位线的日志段对象
+      //3. 最新的日志段不包含任何消息
+      //最新的日志段是segments中key最大的那个日志段，也就是activeSegment
+      //在遍历过程中，同时不满足以上三个条件的日志段是可以删除的
       while (segmentEntry != null) {
         val segment = segmentEntry.getValue
         val nextSegmentEntry = segments.higherEntry(segmentEntry.getKey)
@@ -1813,6 +1823,9 @@ class Log(@volatile var dir: File,
   }
 
   /**
+   * 如果启用了主题删除，请删除由于基于时间的保留或日志大小大于retentionSize 而过期的任何日志段。
+   * 无论是否启用删除，删除日志开始偏移量之前的所有日志段
+   *
    * If topic deletion is enabled, delete any log segments that have either expired due to time based retention
    * or because the log size is > retentionSize.
    *
@@ -1820,6 +1833,9 @@ class Log(@volatile var dir: File,
    */
   def deleteOldSegments(): Int = {
     if (config.delete) {
+      //deleteRetentionMsBreachedSegments 删除保存策略过期时间的日志段
+      //deleteRetentionSizeBreachedSegments  删除保存策略过期大小的日志段
+      //deleteLogStartOffsetBreachedSegments 删除起始offset之前的日志段
       deleteRetentionMsBreachedSegments() + deleteRetentionSizeBreachedSegments() + deleteLogStartOffsetBreachedSegments()
     } else {
       deleteLogStartOffsetBreachedSegments()
