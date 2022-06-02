@@ -101,6 +101,7 @@ class LogSegment private[log] (val log: FileRecords,
   private var bytesSinceLastIndexEntry = 0
 
   // The timestamp we used for time based log rolling and for ensuring max compaction delay
+  // 用于基于时间的日志滚动和确保最大压缩延迟的时间戳
   // volatile for LogCleaner to see the update
   @volatile private var rollingBasedTimestamp: Option[Long] = None
 
@@ -137,9 +138,11 @@ class LogSegment private[log] (val log: FileRecords,
    *
    * It is assumed this method is being called from within a lock.
    *
+   * 附加以给定偏移量开头的给定消息。如果需要，将条目添加到索引中。假定从锁中调用此方法
+   *
    * @param largestOffset The last offset in the message set
    * @param largestTimestamp The largest timestamp in the message set.
-   * @param shallowOffsetOfMaxTimestamp The offset of the message that has the largest timestamp in the messages to append.
+   * @param shallowOffsetOfMaxTimestamp the offset of the message that has the largest timestamp in the messages to append.
    * @param records The log entries to append.
    * @return the physical position in the file of the appended records
    * @throws LogSegmentOffsetOverflowException if the largest offset causes index offset overflow
@@ -152,21 +155,24 @@ class LogSegment private[log] (val log: FileRecords,
     if (records.sizeInBytes > 0) {
       trace(s"Inserting ${records.sizeInBytes} bytes at end offset $largestOffset at position ${log.sizeInBytes} " +
             s"with largest timestamp $largestTimestamp at shallow offset $shallowOffsetOfMaxTimestamp")
+      //判断当前的日志段是否为空，如果为空的话，需要更新消息集合的最大时间戳，并将其作为后面新增日志段倒计时的依据
       val physicalPosition = log.sizeInBytes()
       if (physicalPosition == 0)
         rollingBasedTimestamp = Some(largestTimestamp)
-
+    // 确保输入参数的最大值是合法的，判断largestOffset和baseOffset的差是否在标准的范围内[0,Integer.Max_Value]
       ensureOffsetInRange(largestOffset)
 
       // append the messages
       val appendedBytes = log.append(records)
       trace(s"Appended $appendedBytes to ${log.file} at end offset $largestOffset")
       // Update the in memory max timestamp and corresponding offset.
+      //更新日志段的最大时间戳和最大时间戳对应消息的位移
       if (largestTimestamp > maxTimestampSoFar) {
         maxTimestampSoFar = largestTimestamp
         offsetOfMaxTimestampSoFar = shallowOffsetOfMaxTimestamp
       }
       // append an entry to the index (if needed)
+      // 是否需要添加索引文件，offset索引和时间戳索引
       if (bytesSinceLastIndexEntry > indexIntervalBytes) {
         offsetIndex.append(largestOffset, physicalPosition)
         timeIndex.maybeAppend(maxTimestampSoFar, offsetOfMaxTimestampSoFar)
@@ -283,6 +289,8 @@ class LogSegment private[log] (val log: FileRecords,
    * Read a message set from this segment beginning with the first offset >= startOffset. The message set will include
    * no more than maxSize bytes and will end before maxOffset if a maxOffset is specified.
    *
+   * 从此段读取消息集，从第一个偏移量 >= startOffset 开始。如果指定了 maxOffset，则消息集将包含不超过 maxSize 字节，并将在 maxOffset 之前结束。
+   *
    * @param startOffset A lower bound on the first offset to include in the message set we read
    * @param maxSize The maximum number of bytes to include in the message set we read
    * @param maxPosition The maximum position in the log segment that should be exposed for read
@@ -292,10 +300,10 @@ class LogSegment private[log] (val log: FileRecords,
    *         or null if the startOffset is larger than the largest offset in this log
    */
   @threadsafe
-  def read(startOffset: Long,
-           maxSize: Int,
-           maxPosition: Long = size,
-           minOneMessage: Boolean = false): FetchDataInfo = {
+  def read(startOffset: Long,//起始位移
+           maxSize: Int,//能读取到的最大字节数
+           maxPosition: Long = size,//能读取的最大位移
+           minOneMessage: Boolean = false/*是否允许消息过大的时候至少返回一条消息*/): FetchDataInfo = {
     if (maxSize < 0)
       throw new IllegalArgumentException(s"Invalid max size $maxSize for log read from segment $log")
 
@@ -318,7 +326,7 @@ class LogSegment private[log] (val log: FileRecords,
 
     // calculate the length of the message set to read based on whether or not they gave us a maxOffset
     val fetchSize: Int = min((maxPosition - startPosition).toInt, adjustedMaxSize)
-
+    //调用slice方法读取日志
     FetchDataInfo(offsetMetadata, log.slice(startPosition, fetchSize),
       firstEntryIncomplete = adjustedMaxSize < startOffsetAndSize.size)
   }
@@ -329,6 +337,9 @@ class LogSegment private[log] (val log: FileRecords,
   /**
    * Run recovery on the given segment. This will rebuild the index from the log file and lop off any invalid bytes
    * from the end of the log and index.
+   *
+   * 在给定的段上运行恢复。这将从日志文件中重建索引，并从日志和索引的末尾删除任何无效字节。
+   * Broker在启动时会从磁盘上加载日志到内存中，并创建LogSegment实例
    *
    * @param producerStateManager Producer state corresponding to the segment's base offset. This is needed to recover
    *                             the transaction index.
